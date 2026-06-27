@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Socket.io Chat App</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+</head>
+<body>
+    <div id="login-container">
+        <div class="login-box">
+            <h1>💬 Chat App</h1>
+            <form id="login-form">
+                <input type="text" id="username-input" placeholder="Enter username" required>
+                <input type="text" id="room-input" placeholder="Enter room name" required>
+                <button type="submit">Join Chat</button>
+            </form>
+            <div id="error-message" class="error"></div>
+        </div>
+    </div>
+
+    <div id="chat-container" style="display:none;">
+        <div id="sidebar">
+            <div id="room-info">
+                <h3 id="current-room"></h3>
+                <button id="logout-btn">Leave Room</button>
+            </div>
+            <div id="user-list-container">
+                <h4>Online Users</h4>
+                <ul id="user-list"></ul>
+            </div>
+        </div>
+
+        <div id="chat-main">
+            <div id="messages-container">
+                <div id="messages"></div>
+            </div>
+            <div id="typing-indicator"></div>
+            <div id="input-container">
+                <input type="text" id="message-input" placeholder="Type a message...">
+                <button id="send-btn">Send</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        let username = '';
+        let room = '';
+        let typingTimeout = null;
+
+        // DOM Elements
+        const loginContainer = document.getElementById('login-container');
+        const chatContainer = document.getElementById('chat-container');
+        const loginForm = document.getElementById('login-form');
+        const usernameInput = document.getElementById('username-input');
+        const roomInput = document.getElementById('room-input');
+        const errorMessage = document.getElementById('error-message');
+        const messagesDiv = document.getElementById('messages');
+        const messageInput = document.getElementById('message-input');
+        const sendBtn = document.getElementById('send-btn');
+        const userList = document.getElementById('user-list');
+        const currentRoom = document.getElementById('current-room');
+        const logoutBtn = document.getElementById('logout-btn');
+        const typingIndicator = document.getElementById('typing-indicator');
+
+        // Login form submission
+        loginForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            username = usernameInput.value.trim();
+            room = roomInput.value.trim();
+
+            if (!username || !room) {
+                showError('Please fill in all fields');
+                return;
+            }
+
+            // Join the room
+            socket.emit('join', { username, room });
+        });
+
+        // Socket event handlers
+        socket.on('joined', (data) => {
+            console.log('Joined:', data);
+            loginContainer.style.display = 'none';
+            chatContainer.style.display = 'flex';
+            currentRoom.textContent = `Room: ${data.room}`;
+            showMessage('system', `${data.message}`);
+            errorMessage.textContent = '';
+        });
+
+        socket.on('error', (data) => {
+            showError(data.message);
+        });
+
+        socket.on('user_joined', (data) => {
+            showMessage('system', `${data.username} joined the chat`, data.time);
+        });
+
+        socket.on('user_left', (data) => {
+            showMessage('system', `${data.username} left the chat`, data.time);
+        });
+
+        socket.on('new_message', (data) => {
+            showMessage('user', data.message, data.time, data.username);
+            scrollToBottom();
+        });
+
+        socket.on('user_list', (users) => {
+            userList.innerHTML = '';
+            users.forEach(user => {
+                const li = document.createElement('li');
+                li.textContent = user;
+                if (user !== username) {
+                    li.style.cursor = 'pointer';
+                    li.addEventListener('click', () => {
+                        const target = prompt(`Send private message to ${user}:`);
+                        if (target) {
+                            socket.emit('private_message', {
+                                sender: username,
+                                recipient: user,
+                                message: target
+                            });
+                        }
+                    });
+                } else {
+                    li.style.fontWeight = 'bold';
+                    li.textContent += ' (you)';
+                }
+                userList.appendChild(li);
+            });
+        });
+
+        socket.on('user_typing', (data) => {
+            if (data.is_typing) {
+                typingIndicator.textContent = `${data.username} is typing...`;
+            } else {
+                typingIndicator.textContent = '';
+            }
+        });
+
+        socket.on('private_message', (data) => {
+            showMessage('private', data.message, data.time, `Private from ${data.sender}`);
+            scrollToBottom();
+        });
+
+        socket.on('private_message_sent', (data) => {
+            showMessage('system', `Private message sent to ${data.recipient}: ${data.message}`, data.time);
+            scrollToBottom();
+        });
+
+        // Send message
+        function sendMessage() {
+            const message = messageInput.value.trim();
+            if (message) {
+                socket.emit('message', { username, room, message });
+                messageInput.value = '';
+                clearTypingTimeout();
+            }
+        }
+
+        sendBtn.addEventListener('click', sendMessage);
+
+        messageInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+
+        // Typing indicator
+        messageInput.addEventListener('input', () => {
+            socket.emit('typing', { username, room, is_typing: true });
+            clearTimeout(typingTimeout);
+            typingTimeout = setTimeout(() => {
+                socket.emit('typing', { username, room, is_typing: false });
+            }, 1000);
+        });
+
+        function clearTypingTimeout() {
+            if (typingTimeout) {
+                clearTimeout(typingTimeout);
+                socket.emit('typing', { username, room, is_typing: false });
+                typingTimeout = null;
+            }
+        }
+
+        // Show messages
+        function showMessage(type, content, time = '', sender = '') {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${type}`;
+            
+            const timeSpan = document.createElement('span');
+            timeSpan.className = 'message-time';
+            timeSpan.textContent = time || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            
+            const contentSpan = document.createElement('span');
+            contentSpan.className = 'message-content';
+            
+            if (type === 'system') {
+                contentSpan.textContent = `🔔 ${content}`;
+            } else if (type === 'private') {
+                contentSpan.innerHTML = `<strong>${sender}</strong>: ${content}`;
+            } else {
+                contentSpan.innerHTML = `<strong>${sender || username}</strong>: ${content}`;
+            }
+            
+            messageDiv.appendChild(timeSpan);
+            messageDiv.appendChild(contentSpan);
+            messagesDiv.appendChild(messageDiv);
+        }
+
+        function showError(message) {
+            errorMessage.textContent = message;
+            setTimeout(() => {
+                errorMessage.textContent = '';
+            }, 5000);
+        }
+
+        function scrollToBottom() {
+            const container = document.getElementById('messages-container');
+            container.scrollTop = container.scrollHeight;
+        }
+
+        // Logout
+        logoutBtn.addEventListener('click', () => {
+            socket.disconnect();
+            location.reload();
+        });
+
+        // Handle page reload
+        window.addEventListener('beforeunload', () => {
+            if (username && room) {
+                socket.emit('leave', { username, room });
+            }
+        });
+    </script>
+</body>
+</html>
